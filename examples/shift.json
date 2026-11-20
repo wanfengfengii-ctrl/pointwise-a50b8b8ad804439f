@@ -1,0 +1,17 @@
+{
+  "tray": "T-01",
+  "round_id": "R-01",
+  "slots": [[1, 1, "a"], [1, 2, "b"], [2, 1, "c"]],
+  "readings": {
+    "A": [["a", [0, 1]], ["b", [3, 1]]],
+    "B": [["b", [1, 1]], ["c", null]]
+  },
+  "expected": {
+    "covered": ["a", "b"],
+    "repeated": ["b"],
+    "uninspected": ["c"],
+    "counts": [2, 1, 1],
+    "means": [[3, 2], [1, 1]]
+  },
+  "next_shift_expected": {"resample": ["c"]}
+}

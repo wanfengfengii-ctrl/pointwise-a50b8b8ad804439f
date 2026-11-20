@@ -38,6 +38,24 @@ class ReviewReceipt:
     report_id: int
 
 
+@dataclass(frozen=True)
+class OverlapBody:
+    tray: str
+    round_id: str
+    roster_id: str
+    sources: tuple[ReportSource, ...]
+    lower: int
+    upper: int
+    lower_witness: tuple[tuple[str, ...], tuple[str, ...]]
+    upper_witness: tuple[tuple[str, ...], tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class OverlapReport:
+    report_id: int
+    body: OverlapBody
+
+
 def _encode_body(body: ReviewBody) -> str:
     data = {
         'tray': body.tray,
@@ -71,6 +89,32 @@ def _decode_body(encoded: str) -> ReviewBody:
     )
 
 
+def _encode_overlap_body(body: OverlapBody) -> str:
+    data = {
+        'version': 2,
+        'tray': body.tray,
+        'round_id': body.round_id,
+        'roster_id': body.roster_id,
+        'sources': [asdict(source) for source in body.sources],
+        'lower': body.lower,
+        'upper': body.upper,
+        'lower_witness': [list(body.lower_witness[0]), list(body.lower_witness[1])],
+        'upper_witness': [list(body.upper_witness[0]), list(body.upper_witness[1])],
+    }
+    return json.dumps(data, separators=(',', ':'))
+
+
+def _decode_overlap_body(encoded: str) -> OverlapBody:
+    data = json.loads(encoded)
+    return OverlapBody(
+        data['tray'], data['round_id'], data['roster_id'],
+        tuple(ReportSource(**row) for row in data['sources']),
+        data['lower'], data['upper'],
+        (tuple(data['lower_witness'][0]), tuple(data['lower_witness'][1])),
+        (tuple(data['upper_witness'][0]), tuple(data['upper_witness'][1])),
+    )
+
+
 class ReportRegister:
     def __init__(self, connection: sqlite3.Connection, before_commit: Callable[[], None] | None = None):
         self.connection = connection
@@ -86,6 +130,18 @@ class ReportRegister:
             CREATE TABLE IF NOT EXISTS receipts (
                 id INTEGER PRIMARY KEY,
                 report_id INTEGER NOT NULL UNIQUE REFERENCES reports(id)
+            )
+        ''')
+        connection.execute('''
+            CREATE TABLE IF NOT EXISTS overlap_reports (
+                id INTEGER PRIMARY KEY,
+                body TEXT NOT NULL
+            )
+        ''')
+        connection.execute('''
+            CREATE TABLE IF NOT EXISTS overlap_receipts (
+                id INTEGER PRIMARY KEY,
+                report_id INTEGER NOT NULL UNIQUE REFERENCES overlap_reports(id)
             )
         ''')
 
@@ -118,4 +174,38 @@ class ReportRegister:
     def counts(self) -> tuple[int, int]:
         return self.connection.execute(
             'SELECT (SELECT count(*) FROM reports), (SELECT count(*) FROM receipts)'
+        ).fetchone()
+
+    def commit_v2(self, body: OverlapBody) -> tuple[OverlapReport, ReviewReceipt]:
+        encoded = _encode_overlap_body(body)
+        db = self.connection
+        db.execute('BEGIN IMMEDIATE')
+        with db:
+            report_id = db.execute(
+                'INSERT INTO overlap_reports (body) VALUES (?)', (encoded,)
+            ).lastrowid
+            receipt_id = db.execute(
+                'INSERT INTO overlap_receipts (report_id) VALUES (?)', (report_id,)
+            ).lastrowid
+            if self.before_commit is not None:
+                self.before_commit()
+        return OverlapReport(report_id, body), ReviewReceipt(receipt_id, report_id)
+
+    def load_v2(self, report_id: int) -> tuple[OverlapReport, ReviewReceipt]:
+        if type(report_id) is not int or not 0 < report_id <= 2**63 - 1:
+            raise KeyError(report_id)
+        row = self.connection.execute(
+            '''SELECT p.body, r.id FROM overlap_reports p
+               JOIN overlap_receipts r ON r.report_id = p.id WHERE p.id = ?''',
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(report_id)
+        body, receipt_id = row
+        return OverlapReport(report_id, _decode_overlap_body(body)), ReviewReceipt(receipt_id, report_id)
+
+    def counts_v2(self) -> tuple[int, int]:
+        return self.connection.execute(
+            'SELECT (SELECT count(*) FROM overlap_reports), '
+            '(SELECT count(*) FROM overlap_receipts)'
         ).fetchone()

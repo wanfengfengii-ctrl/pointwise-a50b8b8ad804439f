@@ -1,5 +1,11 @@
+from .overlap import OverlapBounds as OverlapBounds
+from .overlap import OverlapWitness as OverlapWitness
 from .publish import publish_v1 as publish_v1
+from .publish_v2 import publish_v2 as publish_v2
 from .readback import read_v1 as read_v1
+from .readback_v2 import read_v2 as read_v2
+from .register import OverlapBody as OverlapBody
+from .register import OverlapReport as OverlapReport
 from .register import ReportRegister as ReportRegister
 from .register import ReviewReceipt as ReviewReceipt
 from .register import ReviewReport as ReviewReport

@@ -4,7 +4,7 @@
 
 ## 运行
 
-使用 Python 3.11 标准库和 SQLite。物化后的正常回归入口为 `python3 -B check_project.py`。运行 `python3 -B shift_example.py` 可以在新临时目录演示完整交班，含关站、提交失败重试和重开领取。程序遇到断言或业务错误时以失败退出。
+使用 Python 3.11 标准库和 SQLite。物化后的正常回归入口为 `python3 -B check_project.py`（含原 V1 回归与 V2 联合场景门）。运行 `python3 -B shift_example.py` 可以在新临时目录演示完整 V1 交班，含关站、提交失败重试和重开领取；运行 `python3 -B overlap_example.py` 先输出 V1 确定交集对照，再用磁盘库演示 V2 两组候选的关站签发、中心接纳、上下界见证以及中心重开后按原号领回。程序遇到断言或业务错误时以失败退出。
 
 `shift_example.initialize(directory)` 在调用方指定的目录建立样例清册与两站的初始录入，并创建清册库、两份站库和中心库的表。重复执行会使用现存清册与站内当前修订，保留勘误、发行、接纳和报告。清册库可由准备岗、两站与中心共用。站库由各自站别保管，同一站别应持续使用同一份站库。中心核账时只需清册库和中心库。仓储对象接收调用方负责关闭的 `sqlite3.Connection`，写入口自行完成事务，请在无外层待提交事务的连接上调用。
 
@@ -19,8 +19,22 @@
 | `admission.accept_v1(archive, catalog, roster_id, raw)` | 验收原始字节，返回含 `admission_id`、`raw` 和解码正文的接纳记录。`AdmissionArchive.find` 按号领取首存原件。 |
 | `review.publish_v1(archive, catalog, register, first_id, second_id)` | 按给定次序选择同盘同轮同清册的异站件，原子签出 `(ReviewReport, ReviewReceipt)`。报告正文中的来源与分站计量按选件次序对应。 |
 | `review.read_v1(register, report_id)` | 返回已保存的 `(ReviewReport, ReviewReceipt)`，报告的 `body` 含 `coverage`、`stations`、`sources` 和清册身份。 |
+| `station.issue_v2(journal, catalog, outbox, frozen_id, candidates)` | 按确切冻结号发行只含匿名资格的 V2 站件。`candidates` 以站内录入键（即受检槽标签）为键，键集恰好覆盖全部有效读数；每项为 list/tuple/set/frozenset 形式的候选槽集合，确证读数只给一个候选槽，空站给空字典。整站无可行归属时拒发。 |
+| `admission.accept_v2(archive, catalog, roster_id, raw)` | 按指定清册接纳 V2 原字节，返回含 `admission_id`、`raw` 与 `V2Envelope` 的记录。同来源同冻结号且整站可行槽集合族相同的重投沿用首接纳号与首存原文，资格改变报 `ValueError`。 |
+| `review.publish_v2(archive, catalog, register, first_id, second_id)` | 选择同盘同轮同冻结清册的异站 V2 件，原子签出 `(OverlapReport, ReviewReceipt)`。`body` 含 `tray`、`round_id`、`roster_id`、`sources`、整数 `lower`/`upper` 与 `lower_witness`/`upper_witness`。 |
+| `review.read_v2(register, report_id)` | 按原报告号返回已保存的 `(OverlapReport, ReviewReceipt)`，重开中心或源端追加勘误后仍领取当时结论。 |
 
 输入读值为 `int`、`Fraction` 或整数对 `[分子, 正分母]`。`None` 表示明确缺测，零值计入有效测次。读值单位为微米，读值和及均值按有理数保存。空站的受检槽为空、有效数和读值和为零，均值为空。来件槽表必须按冻结清册序，内部计数必须等于受检槽数。中心核验件内可以对账的字段，使用站端交付的精确读值和。等值分数和 JSON 编码空白不影响等价重投，首存字节保持原样。
+
+## V2 匿名资格与重复受检上下界
+
+V2 站件是 UTF-8 JSON 字节，对象字段为 `version`（整数 2）、`station`、`tray`、`round_id`、`roster_id`、`frozen_id` 与 `sets`。原读数、录入键和录入顺序留站，件内只交接匿名资格和出处。
+
+`sets` 精确表达在满足“每条有效读数恰占一个候选槽、本站不同读数不得重占”时能出现的整站可行槽集合族：它是一个列表，每个元素是一个完整槽集合（槽标签按冻结清册序排列的列表）；空站认可唯一的空集合，编码为 `"sets": [[]]`。集合族内各集合占用槽数相同（等于有效读数条数）且互不重复。核验一个完整槽集合时，先按清册库把每个槽标签确认属于该冻结清册，再判断该集合（作为无序集合）是否出现在 `sets` 中；出现即说明存在一条满足全部候选约束的整站占用方案。接纳侧会重新规范化集合族，因此来件内层顺序、集合族排列次序或 JSON 空白变化，只要资格不变就沿用首接纳号。
+
+`review.publish_v2` 分别从两份异站资格中各取一个完整槽集合，枚举求交集片数的精确最小值和最大值。每个端值附一对可由各自整站资格兑现的见证，形如 `((第一站槽标签, ...), (第二站槽标签, ...))`，各端槽标签按原清册序排列，允许空元组；同一槽被两站各占一次时交集只计一片。报告与回执在同一事务可见，`before_commit` 故障注入会令二者同时无新增，撤除后可用同一对接纳号重试。
+
+V1 与 V2 在同一冻结号下各发一份、互不覆盖；中心接纳号在两版间共享同一号段，V2 签发入口收到 V1 接纳号报 `ValueError`。既有 V1 中心库首次由新版 `AdmissionArchive` 打开时自动迁移到带 `version` 列的表，原接纳号、原件与顺序保持不变。
 
 未知清册、修订、发行件、接纳号或报告号报 `KeyError`。非法位置、异清册槽、非法读值、坏件、来源冲突和选件失配报 `ValueError`。SQLite 写入失败会回滚本次成果并传播异常。报告和回执可以用原选件重试，旧报告按原号领取。
 
